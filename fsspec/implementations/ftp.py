@@ -1,4 +1,5 @@
 import os
+import ssl
 import uuid
 from ftplib import FTP, FTP_TLS, Error, error_perm
 from typing import Any
@@ -6,6 +7,28 @@ from typing import Any
 from ..spec import AbstractBufferedFile, AbstractFileSystem
 from ..utils import infer_storage_options, isfilelike
 
+
+class ImplicitFTPTLS(FTP_TLS):
+    """
+    FTP_TLS subclass that automatically wraps sockets in SSL
+    to support implicit FTPS.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sock = None
+
+    @property
+    def sock(self):
+        """Return the socket."""
+        return self._sock
+
+    @sock.setter
+    def sock(self, value):
+        """When modifying the socket, ensure that it is ssl wrapped."""
+        if value is not None and not isinstance(value, ssl.SSLSocket):
+            value = self.context.wrap_socket(value)
+        self._sock = value
 
 class FTPFileSystem(AbstractFileSystem):
     """A filesystem over classic FTP"""
@@ -75,11 +98,17 @@ class FTPFileSystem(AbstractFileSystem):
             self.ftp.prot_p()
 
     def _connect(self):
+        security = None
         if self.tls:
-            ftp_cls = FTP_TLS
+            ftp_cls = ImplicitFTPTLS(timeout=self.timeout, encoding=self.encoding)
+            security = ssl.PROTOCOL_TLSv1_2
+            if isinstance(security, str):
+                raise UserError(security)
         else:
-            ftp_cls = FTP
-        self.ftp = ftp_cls(timeout=self.timeout, encoding=self.encoding)
+            ftp_cls = FTP(timeout=self.timeout, encoding=self.encoding)
+        self.ftp = ftp_cls
+        if security:
+            self.ftp.ssl_version = security
         self.ftp.connect(self.host, self.port)
         self.ftp.login(*self.cred)
 
